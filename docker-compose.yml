@@ -1,0 +1,37 @@
+version: '3.9'
+
+services:
+  frontend:
+    image: node:23.1.0
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 3000"
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_POCKETBASE_URL=${VITE_POCKETBASE_URL}
+    volumes:
+      - ./app:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      pocketbase:
+        condition: service_healthy
+
+  pocketbase:
+    build:
+      context: ./docker/pocketBase
+    ports:
+      - "8080:8080"
+    volumes:
+      - pocketbase_data:/pb/pb_data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8080/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    environment:
+      - email=test@test.com
+      - password=test123
+
+volumes:
+  frontend_node_modules:
+  pocketbase_data:
