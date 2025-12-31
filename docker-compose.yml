@@ -28,9 +28,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-    environment:
-      - email=test@test.com
-      - password=test123
 
 volumes:
   frontend_node_modules:

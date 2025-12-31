@@ -1,4 +1,3 @@
-# React用
 FROM node:23.1.0
 WORKDIR /app
 COPY package.json /app
