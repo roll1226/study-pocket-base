@@ -11,16 +11,48 @@ type TodoRecord = RecordModel & {
 const parseError = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
 
+const extractMfaId = (error: unknown): string => {
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+
+  const response = (
+    error as {
+      response?: { mfaId?: unknown; data?: { mfaId?: unknown } };
+    }
+  ).response;
+
+  const direct = response?.mfaId;
+  if (typeof direct === "string" && direct) {
+    return direct;
+  }
+
+  const nested = response?.data?.mfaId;
+  if (typeof nested === "string" && nested) {
+    return nested;
+  }
+
+  return "";
+};
+
 function App() {
   const [currentUser, setCurrentUser] = useState<AuthModel | null>(
     pb.authStore.model
   );
+  const [authStep, setAuthStep] = useState<"login" | "register" | "mfa">(
+    "login"
+  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
-  const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
+  const [otpRequestLoading, setOtpRequestLoading] = useState(false);
   const [authError, setAuthError] = useState("");
+  const [authInfo, setAuthInfo] = useState("");
+  const [mfaId, setMfaId] = useState("");
+  const [mfaIdentity, setMfaIdentity] = useState("");
+  const [otpId, setOtpId] = useState("");
+  const [otpCode, setOtpCode] = useState("");
 
   const [todos, setTodos] = useState<TodoRecord[]>([]);
   const [todosLoading, setTodosLoading] = useState(false);
@@ -83,22 +115,85 @@ function App() {
     };
   }, [currentUser]);
 
-  const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const resetMfaState = () => {
+    setMfaId("");
+    setMfaIdentity("");
+    setOtpId("");
+    setOtpCode("");
+    setOtpRequestLoading(false);
+  };
+
+  const requestOtpForIdentity = async (identity: string) => {
+    const trimmedIdentity = identity.trim();
+    if (!trimmedIdentity) {
+      setAuthError("メールアドレスを入力してください。");
+      return false;
+    }
+
     setAuthError("");
-    setAuthLoading(true);
+    setAuthInfo("");
+    setOtpRequestLoading(true);
+    setOtpCode("");
+
     try {
-      await pb.collection("users").authWithPassword(email, password);
-      setEmail("");
-      setPassword("");
-      setPasswordConfirm("");
+      const result = await pb.collection("users").requestOTP(trimmedIdentity);
+      setOtpId(result.otpId);
+      setAuthInfo("認証コードを送信しました。メールをご確認ください。");
+      return true;
     } catch (error) {
       setAuthError(
         parseError(
           error,
-          "ログインに失敗しました。メールアドレスとパスワードをご確認ください。"
+          "認証コードの送信に失敗しました。再度お試しください。"
         )
       );
+      return false;
+    } finally {
+      setOtpRequestLoading(false);
+    }
+  };
+
+  const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmedEmail = email.trim();
+    setEmail(trimmedEmail);
+
+    if (!trimmedEmail) {
+      setAuthError("メールアドレスを入力してください。");
+      return;
+    }
+
+    setAuthError("");
+    setAuthInfo("");
+    setAuthLoading(true);
+
+    try {
+      await pb.collection("users").authWithPassword(trimmedEmail, password);
+      setEmail("");
+      setPassword("");
+      setPasswordConfirm("");
+      resetMfaState();
+    } catch (error) {
+      const requiredMfaId = extractMfaId(error);
+      console.log({
+        requiredMfaId,
+      });
+
+      if (requiredMfaId) {
+        setMfaId(requiredMfaId);
+        setMfaIdentity(trimmedEmail);
+        setAuthStep("mfa");
+        setPassword("");
+        setPasswordConfirm("");
+        await requestOtpForIdentity(trimmedEmail);
+      } else {
+        setAuthError(
+          parseError(
+            error,
+            "ログインに失敗しました。メールアドレスとパスワードをご確認ください。"
+          )
+        );
+      }
     } finally {
       setAuthLoading(false);
     }
@@ -126,6 +221,7 @@ function App() {
     }
 
     setAuthError("");
+    setAuthInfo("");
     setAuthLoading(true);
 
     try {
@@ -142,6 +238,8 @@ function App() {
       setEmail("");
       setPassword("");
       setPasswordConfirm("");
+      resetMfaState();
+      setAuthStep("login");
     } catch (error) {
       setAuthError(
         parseError(error, "アカウント作成に失敗しました。再度お試しください。")
@@ -151,10 +249,52 @@ function App() {
     }
   };
 
+  const handleVerifyOtp = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!mfaId || !otpId) {
+      setAuthError("認証コードを送信してから再度お試しください。");
+      return;
+    }
+
+    const trimmedOtp = otpCode.trim();
+    if (!trimmedOtp) {
+      setAuthError("メールに届いた認証コードを入力してください。");
+      return;
+    }
+
+    setAuthError("");
+    setAuthInfo("");
+    setAuthLoading(true);
+
+    try {
+      await pb.collection("users").authWithOTP(otpId, trimmedOtp, { mfaId });
+      setEmail("");
+      setPassword("");
+      setPasswordConfirm("");
+      resetMfaState();
+      setAuthStep("login");
+    } catch (error) {
+      setAuthError(parseError(error, "OTPでの認証に失敗しました。"));
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    if (!mfaIdentity) {
+      setAuthError("メールアドレスを入力してください。");
+      return;
+    }
+
+    await requestOtpForIdentity(mfaIdentity);
+  };
+
   const handleLogout = () => {
     pb.authStore.clear();
     setTodos([]);
     setAuthError("");
+    setAuthInfo("");
     setTodoError("");
     setEmail("");
     setPassword("");
@@ -163,18 +303,38 @@ function App() {
     setEditingId(null);
     setEditingTitle("");
     setPendingTodoId(null);
-    setIsRegisterMode(false);
+    resetMfaState();
+    setAuthStep("login");
   };
 
-  const toggleAuthMode = () => {
-    if (authLoading) {
+  const switchAuthStep = (nextStep: "login" | "register") => {
+    if (authLoading || otpRequestLoading) {
       return;
     }
-    setIsRegisterMode((previous) => !previous);
+
+    setAuthStep(nextStep);
     setAuthError("");
-    setEmail("");
+    setAuthInfo("");
     setPassword("");
     setPasswordConfirm("");
+    resetMfaState();
+
+    if (nextStep === "register") {
+      setEmail("");
+    }
+  };
+
+  const cancelMfa = () => {
+    if (authLoading || otpRequestLoading) {
+      return;
+    }
+
+    setAuthStep("login");
+    setAuthError("");
+    setAuthInfo("");
+    setPassword("");
+    setPasswordConfirm("");
+    resetMfaState();
   };
 
   const handleCreateTodo = async (event: FormEvent<HTMLFormElement>) => {
@@ -264,50 +424,87 @@ function App() {
     }
   };
 
+  const isRegisterView = authStep === "register";
+  const isMfaView = authStep === "mfa";
+
+  const primaryButtonDisabled =
+    authLoading ||
+    (isRegisterView && password.trim() !== passwordConfirm.trim()) ||
+    (isMfaView && (!otpId || !otpCode.trim()));
+
+  const primaryButtonLabel = authLoading
+    ? isRegisterView
+      ? "作成中…"
+      : isMfaView
+      ? "確認中…"
+      : "認証中…"
+    : isRegisterView
+    ? "アカウント作成"
+    : isMfaView
+    ? "認証を完了"
+    : "ログイン";
+
+  const authTitle = isRegisterView
+    ? "新規アカウント作成"
+    : isMfaView
+    ? "多要素認証を完了"
+    : "PocketBaseにログイン";
+
+  const authSubtitle = isRegisterView
+    ? "メールアドレスとパスワードを入力してアカウントを作成してください。"
+    : isMfaView
+    ? "メールに送信されたワンタイムコードを入力して認証を完了してください。"
+    : "事前に作成済みのPocketBaseユーザーでログインしてください。";
+
   return (
     <div className="app-root">
       {!currentUser ? (
         <div className="app-shell auth-shell">
-          <h1 className="app-title">
-            {isRegisterMode ? "新規アカウント作成" : "PocketBaseにログイン"}
-          </h1>
-          <p className="app-subtitle">
-            {isRegisterMode
-              ? "メールアドレスとパスワードを入力してアカウントを作成してください。"
-              : "事前に作成済みのPocketBaseユーザーでログインしてください。"}
-          </p>
+          <h1 className="app-title">{authTitle}</h1>
+          <p className="app-subtitle">{authSubtitle}</p>
           {authError && <div className="error-message">{authError}</div>}
+          {authInfo && <div className="info-banner">{authInfo}</div>}
           <form
             className="auth-form"
-            onSubmit={isRegisterMode ? handleRegister : handleLogin}
+            onSubmit={
+              isRegisterView
+                ? handleRegister
+                : isMfaView
+                ? handleVerifyOtp
+                : handleLogin
+            }
           >
-            <label className="form-field">
-              <span>メールアドレス</span>
-              <input
-                className="input-field"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="example@example.com"
-                required
-              />
-            </label>
-            <label className="form-field">
-              <span>パスワード</span>
-              <input
-                className="input-field"
-                type="password"
-                autoComplete={
-                  isRegisterMode ? "new-password" : "current-password"
-                }
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder="パスワード"
-                required
-              />
-            </label>
-            {isRegisterMode && (
+            {!isMfaView && (
+              <label className="form-field">
+                <span>メールアドレス</span>
+                <input
+                  className="input-field"
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="example@example.com"
+                  required
+                />
+              </label>
+            )}
+            {!isMfaView && (
+              <label className="form-field">
+                <span>パスワード</span>
+                <input
+                  className="input-field"
+                  type="password"
+                  autoComplete={
+                    isRegisterView ? "new-password" : "current-password"
+                  }
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="パスワード"
+                  required
+                />
+              </label>
+            )}
+            {isRegisterView && (
               <label className="form-field">
                 <span>パスワード（確認）</span>
                 <input
@@ -321,38 +518,74 @@ function App() {
                 />
               </label>
             )}
+            {isMfaView && (
+              <>
+                <div className="mfa-summary">
+                  認証コードは {mfaIdentity} に送信されています。
+                </div>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={handleResendOtp}
+                  disabled={otpRequestLoading}
+                >
+                  {otpRequestLoading ? "再送中…" : "認証コードを再送"}
+                </button>
+                <label className="form-field">
+                  <span>認証コード</span>
+                  <input
+                    className="input-field"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    value={otpCode}
+                    onChange={(event) => setOtpCode(event.target.value)}
+                    placeholder="メールに届いたコード"
+                    required
+                  />
+                </label>
+              </>
+            )}
             <button
               className="primary-button"
               type="submit"
-              disabled={
-                authLoading ||
-                (isRegisterMode && password.trim() !== passwordConfirm.trim())
-              }
+              disabled={primaryButtonDisabled}
             >
-              {authLoading
-                ? isRegisterMode
-                  ? "作成中…"
-                  : "認証中…"
-                : isRegisterMode
-                ? "アカウント作成"
-                : "ログイン"}
+              {primaryButtonLabel}
             </button>
           </form>
-          <div className="auth-toggle">
-            <span>
-              {isRegisterMode
-                ? "既にアカウントをお持ちの場合はこちら"
-                : "アカウントをお持ちでない場合はこちら"}
-            </span>
-            <button
-              className="link-button"
-              type="button"
-              onClick={toggleAuthMode}
-              disabled={authLoading}
-            >
-              {isRegisterMode ? "ログイン画面へ" : "新規アカウント作成"}
-            </button>
-          </div>
+          {!isMfaView && (
+            <div className="auth-toggle">
+              <span>
+                {isRegisterView
+                  ? "既にアカウントをお持ちの場合はこちら"
+                  : "アカウントをお持ちでない場合はこちら"}
+              </span>
+              <button
+                className="link-button"
+                type="button"
+                onClick={() =>
+                  switchAuthStep(isRegisterView ? "login" : "register")
+                }
+                disabled={authLoading || otpRequestLoading}
+              >
+                {isRegisterView ? "ログイン画面へ" : "新規アカウント作成"}
+              </button>
+            </div>
+          )}
+          {isMfaView && (
+            <div className="auth-toggle">
+              <span>パスワードを再入力する場合はこちら</span>
+              <button
+                className="link-button"
+                type="button"
+                onClick={cancelMfa}
+                disabled={authLoading || otpRequestLoading}
+              >
+                ログイン画面へ戻る
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="app-shell todo-shell">
