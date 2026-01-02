@@ -72,6 +72,10 @@ function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [pendingTodoId, setPendingTodoId] = useState<string | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<{
+    url: string;
+    title: string;
+  } | null>(null);
 
   useEffect(() => {
     const remove = pb.authStore.onChange((_, model) => {
@@ -139,6 +143,23 @@ function App() {
     };
   }, [newImageFile]);
 
+  useEffect(() => {
+    if (!lightboxImage) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLightboxImage(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [lightboxImage]);
+
   const resetMfaState = () => {
     setMfaId("");
     setMfaIdentity("");
@@ -196,6 +217,21 @@ function App() {
       return "";
     }
     return pb.files.getUrl(todo, todo.image);
+  };
+
+  const openImageLightbox = (todo: TodoRecord) => {
+    const url = getTodoImageUrl(todo);
+    if (!url) {
+      return;
+    }
+    setLightboxImage({
+      url,
+      title: todo.title,
+    });
+  };
+
+  const closeImageLightbox = () => {
+    setLightboxImage(null);
   };
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
@@ -349,6 +385,7 @@ function App() {
     setEditingId(null);
     setEditingTitle("");
     setPendingTodoId(null);
+    setLightboxImage(null);
     resetMfaState();
     setAuthStep("login");
   };
@@ -733,6 +770,15 @@ function App() {
                           className="todo-image"
                           src={getTodoImageUrl(todo)}
                           alt={`${todo.title}の画像`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openImageLightbox(todo)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              openImageLightbox(todo);
+                            }
+                          }}
                         />
                       )}
                     </div>
@@ -785,6 +831,27 @@ function App() {
               </ul>
             )}
           </section>
+        </div>
+      )}
+      {lightboxImage && (
+        <div className="image-lightbox-backdrop" onClick={closeImageLightbox}>
+          <div
+            className="image-lightbox-content"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <img
+              className="image-lightbox-image"
+              src={lightboxImage.url}
+              alt={`${lightboxImage.title}の拡大画像`}
+            />
+            <button
+              className="secondary-button image-lightbox-close"
+              type="button"
+              onClick={closeImageLightbox}
+            >
+              画像を閉じる
+            </button>
+          </div>
         </div>
       )}
     </div>
