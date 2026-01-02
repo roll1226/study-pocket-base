@@ -1,11 +1,18 @@
 import type { AuthModel, RecordModel } from "pocketbase";
-import { type FormEvent, useEffect, useState } from "react";
+import {
+  type ChangeEvent,
+  type FormEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import "./App.css";
 import pb from "./pocketbaseClient";
 
 type TodoRecord = RecordModel & {
   title: string;
   user: string;
+  image?: string;
 };
 
 const parseError = (error: unknown, fallback: string) =>
@@ -59,6 +66,9 @@ function App() {
   const [todoError, setTodoError] = useState("");
   const [newTitle, setNewTitle] = useState("");
   const [isCreatingTodo, setIsCreatingTodo] = useState(false);
+  const [newImageFile, setNewImageFile] = useState<File | null>(null);
+  const [newImagePreview, setNewImagePreview] = useState("");
+  const newImageInputRef = useRef<HTMLInputElement | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [pendingTodoId, setPendingTodoId] = useState<string | null>(null);
@@ -115,6 +125,20 @@ function App() {
     };
   }, [currentUser]);
 
+  useEffect(() => {
+    if (!newImageFile) {
+      setNewImagePreview("");
+      return;
+    }
+
+    const previewUrl = URL.createObjectURL(newImageFile);
+    setNewImagePreview(previewUrl);
+
+    return () => {
+      URL.revokeObjectURL(previewUrl);
+    };
+  }, [newImageFile]);
+
   const resetMfaState = () => {
     setMfaId("");
     setMfaIdentity("");
@@ -151,6 +175,27 @@ function App() {
     } finally {
       setOtpRequestLoading(false);
     }
+  };
+
+  const handleNewImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    setNewImageFile(file);
+    event.target.value = "";
+  };
+
+  const clearNewImageSelection = () => {
+    setNewImageFile(null);
+    setNewImagePreview("");
+    if (newImageInputRef.current) {
+      newImageInputRef.current.value = "";
+    }
+  };
+
+  const getTodoImageUrl = (todo: TodoRecord) => {
+    if (!todo.image) {
+      return "";
+    }
+    return pb.files.getUrl(todo, todo.image);
   };
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
@@ -300,6 +345,7 @@ function App() {
     setPassword("");
     setPasswordConfirm("");
     setNewTitle("");
+    clearNewImageSelection();
     setEditingId(null);
     setEditingTitle("");
     setPendingTodoId(null);
@@ -352,12 +398,17 @@ function App() {
     setTodoError("");
 
     try {
-      const record = await pb.collection("todos").create<TodoRecord>({
-        title: trimmedTitle,
-        user: currentUser.id,
-      });
+      const formData = new FormData();
+      formData.append("title", trimmedTitle);
+      formData.append("user", currentUser.id);
+      if (newImageFile) {
+        formData.append("image", newImageFile);
+      }
+
+      const record = await pb.collection("todos").create<TodoRecord>(formData);
       setTodos((previous) => [record, ...previous]);
       setNewTitle("");
+      clearNewImageSelection();
     } catch (error) {
       setTodoError(parseError(error, "TODOの追加に失敗しました。"));
     } finally {
@@ -616,6 +667,31 @@ function App() {
                 placeholder="タイトルを入力"
                 disabled={isCreatingTodo}
               />
+              <input
+                className="file-input"
+                type="file"
+                accept="image/*"
+                onChange={handleNewImageChange}
+                disabled={isCreatingTodo}
+                ref={newImageInputRef}
+              />
+              {newImagePreview && (
+                <div className="image-preview">
+                  <img
+                    src={newImagePreview}
+                    alt="新しいTODO画像のプレビュー"
+                    className="preview-image"
+                  />
+                  <button
+                    className="link-button"
+                    type="button"
+                    onClick={clearNewImageSelection}
+                    disabled={isCreatingTodo}
+                  >
+                    画像をクリア
+                  </button>
+                </div>
+              )}
               <button
                 className="primary-button"
                 type="submit"
@@ -638,19 +714,28 @@ function App() {
               <ul className="todo-items">
                 {todos.map((todo) => (
                   <li key={todo.id} className="todo-item">
-                    {editingId === todo.id ? (
-                      <input
-                        className="input-field todo-input"
-                        type="text"
-                        value={editingTitle}
-                        onChange={(event) =>
-                          setEditingTitle(event.target.value)
-                        }
-                        disabled={pendingTodoId === todo.id}
-                      />
-                    ) : (
-                      <span className="todo-title">{todo.title}</span>
-                    )}
+                    <div className="todo-main">
+                      {editingId === todo.id ? (
+                        <input
+                          className="input-field todo-input"
+                          type="text"
+                          value={editingTitle}
+                          onChange={(event) =>
+                            setEditingTitle(event.target.value)
+                          }
+                          disabled={pendingTodoId === todo.id}
+                        />
+                      ) : (
+                        <span className="todo-title">{todo.title}</span>
+                      )}
+                      {todo.image && (
+                        <img
+                          className="todo-image"
+                          src={getTodoImageUrl(todo)}
+                          alt={`${todo.title}の画像`}
+                        />
+                      )}
+                    </div>
 
                     <div className="todo-actions">
                       {editingId === todo.id ? (
