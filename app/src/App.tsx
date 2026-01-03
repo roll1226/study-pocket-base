@@ -76,6 +76,11 @@ function App() {
     url: string;
     title: string;
   } | null>(null);
+  const [editingImageFile, setEditingImageFile] = useState<File | null>(null);
+  const [editingImagePreview, setEditingImagePreview] = useState("");
+  const [editingOriginalImageUrl, setEditingOriginalImageUrl] = useState("");
+  const [editingRemoveImage, setEditingRemoveImage] = useState(false);
+  const editingImageInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const remove = pb.authStore.onChange((_, model) => {
@@ -160,6 +165,19 @@ function App() {
     };
   }, [lightboxImage]);
 
+  useEffect(() => {
+    if (!editingImageFile) {
+      return;
+    }
+
+    const previewUrl = URL.createObjectURL(editingImageFile);
+    setEditingImagePreview(previewUrl);
+
+    return () => {
+      URL.revokeObjectURL(previewUrl);
+    };
+  }, [editingImageFile]);
+
   const resetMfaState = () => {
     setMfaId("");
     setMfaIdentity("");
@@ -209,6 +227,16 @@ function App() {
     setNewImagePreview("");
     if (newImageInputRef.current) {
       newImageInputRef.current.value = "";
+    }
+  };
+
+  const resetEditingImageState = () => {
+    setEditingImageFile(null);
+    setEditingImagePreview("");
+    setEditingOriginalImageUrl("");
+    setEditingRemoveImage(false);
+    if (editingImageInputRef.current) {
+      editingImageInputRef.current.value = "";
     }
   };
 
@@ -386,6 +414,7 @@ function App() {
     setEditingTitle("");
     setPendingTodoId(null);
     setLightboxImage(null);
+    resetEditingImageState();
     resetMfaState();
     setAuthStep("login");
   };
@@ -457,11 +486,20 @@ function App() {
     setEditingId(todo.id);
     setEditingTitle(todo.title);
     setTodoError("");
+    const currentImageUrl = getTodoImageUrl(todo);
+    setEditingOriginalImageUrl(currentImageUrl);
+    setEditingImagePreview(currentImageUrl);
+    setEditingImageFile(null);
+    setEditingRemoveImage(false);
+    if (editingImageInputRef.current) {
+      editingImageInputRef.current.value = "";
+    }
   };
 
   const cancelEdit = () => {
     setEditingId(null);
     setEditingTitle("");
+    resetEditingImageState();
   };
 
   const handleSaveEdit = async () => {
@@ -478,15 +516,30 @@ function App() {
     setTodoError("");
 
     try {
-      const updated = await pb
-        .collection("todos")
-        .update<TodoRecord>(editingId, { title: trimmed });
+      let updated: TodoRecord;
+      if (editingImageFile || editingRemoveImage) {
+        const formData = new FormData();
+        formData.append("title", trimmed);
+        if (editingImageFile) {
+          formData.append("image", editingImageFile);
+        } else if (editingRemoveImage) {
+          formData.append("image", "");
+        }
+        updated = await pb
+          .collection("todos")
+          .update<TodoRecord>(editingId, formData);
+      } else {
+        updated = await pb
+          .collection("todos")
+          .update<TodoRecord>(editingId, { title: trimmed });
+      }
 
       setTodos((previous) =>
         previous.map((todo) => (todo.id === updated.id ? updated : todo))
       );
       setEditingId(null);
       setEditingTitle("");
+      resetEditingImageState();
     } catch (error) {
       setTodoError(parseError(error, "TODOの更新に失敗しました。"));
     } finally {
@@ -504,6 +557,7 @@ function App() {
       if (editingId === id) {
         setEditingId(null);
         setEditingTitle("");
+        resetEditingImageState();
       }
     } catch (error) {
       setTodoError(parseError(error, "TODOの削除に失敗しました。"));
@@ -753,33 +807,131 @@ function App() {
                   <li key={todo.id} className="todo-item">
                     <div className="todo-main">
                       {editingId === todo.id ? (
-                        <input
-                          className="input-field todo-input"
-                          type="text"
-                          value={editingTitle}
-                          onChange={(event) =>
-                            setEditingTitle(event.target.value)
-                          }
-                          disabled={pendingTodoId === todo.id}
-                        />
-                      ) : (
-                        <span className="todo-title">{todo.title}</span>
-                      )}
-                      {todo.image && (
-                        <img
-                          className="todo-image"
-                          src={getTodoImageUrl(todo)}
-                          alt={`${todo.title}の画像`}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => openImageLightbox(todo)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
-                              openImageLightbox(todo);
+                        <>
+                          <input
+                            className="input-field todo-input"
+                            type="text"
+                            value={editingTitle}
+                            onChange={(event) =>
+                              setEditingTitle(event.target.value)
                             }
-                          }}
-                        />
+                            disabled={pendingTodoId === todo.id}
+                          />
+                          <div className="edit-image-controls">
+                            <label className="form-field edit-image-field">
+                              <span>画像</span>
+                              <input
+                                className="file-input"
+                                type="file"
+                                accept="image/*"
+                                onChange={(event) => {
+                                  const file = event.target.files?.[0] ?? null;
+                                  setEditingImageFile(file);
+                                  setEditingRemoveImage(false);
+                                  if (!file) {
+                                    setEditingImagePreview(
+                                      editingOriginalImageUrl
+                                    );
+                                  }
+                                }}
+                                ref={editingImageInputRef}
+                                disabled={pendingTodoId === todo.id}
+                              />
+                            </label>
+                            {editingImagePreview ? (
+                              <div className="edit-image-preview">
+                                <img
+                                  src={editingImagePreview}
+                                  alt={`${
+                                    editingTitle || todo.title
+                                  }の編集プレビュー`}
+                                  className="preview-image"
+                                />
+                                {!editingRemoveImage && (
+                                  <button
+                                    className="link-button"
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingImageFile(null);
+                                      setEditingImagePreview("");
+                                      setEditingRemoveImage(true);
+                                      if (editingImageInputRef.current) {
+                                        editingImageInputRef.current.value = "";
+                                      }
+                                    }}
+                                    disabled={pendingTodoId === todo.id}
+                                  >
+                                    画像を削除
+                                  </button>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="edit-image-empty">
+                                {editingRemoveImage
+                                  ? "画像は削除予定です。"
+                                  : "画像は設定されていません。"}
+                                {!editingRemoveImage &&
+                                  editingOriginalImageUrl && (
+                                    <button
+                                      className="link-button"
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingImagePreview(
+                                          editingOriginalImageUrl
+                                        );
+                                        setEditingRemoveImage(false);
+                                      }}
+                                      disabled={pendingTodoId === todo.id}
+                                    >
+                                      元の画像を表示
+                                    </button>
+                                  )}
+                              </div>
+                            )}
+                            {(editingImageFile || editingRemoveImage) && (
+                              <button
+                                className="link-button"
+                                type="button"
+                                onClick={() => {
+                                  setEditingImageFile(null);
+                                  setEditingImagePreview(
+                                    editingOriginalImageUrl
+                                  );
+                                  setEditingRemoveImage(false);
+                                  if (editingImageInputRef.current) {
+                                    editingImageInputRef.current.value = "";
+                                  }
+                                }}
+                                disabled={pendingTodoId === todo.id}
+                              >
+                                変更を取り消す
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <span className="todo-title">{todo.title}</span>
+                          {todo.image && (
+                            <img
+                              className="todo-image"
+                              src={getTodoImageUrl(todo)}
+                              alt={`${todo.title}の画像`}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => openImageLightbox(todo)}
+                              onKeyDown={(event) => {
+                                if (
+                                  event.key === "Enter" ||
+                                  event.key === " "
+                                ) {
+                                  event.preventDefault();
+                                  openImageLightbox(todo);
+                                }
+                              }}
+                            />
+                          )}
+                        </>
                       )}
                     </div>
 
